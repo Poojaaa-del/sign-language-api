@@ -5,69 +5,55 @@ import tensorflow as tf
 import mediapipe as mp
 import cv2
 import base64
+import keras
 
 app = Flask(__name__)
-# CORS(app)  # allows your website to call this API
-CORS(app, origins="*", allow_headers=["Content-Type"])
+CORS(app, resources={r"/*": {"origins": "*"}})
 
-# Load model once at startup
-import keras
+# Load model
 model = keras.models.load_model('letter_model.keras')
+
 LABELS = ['A','B','C','D','E','F','G','H','I','J','K','L','M',
           'N','O','P','Q','R','S','T','U','V','W','X','Y','Z',
           'del','nothing','space']
 
 mp_hands = mp.solutions.hands
-hands = mp_hands.Hands(static_image_mode=True, max_num_hands=1, min_detection_confidence=0.5)
+hands = mp_hands.Hands(
+    static_image_mode=True,
+    max_num_hands=1,
+    min_detection_confidence=0.5,
+    model_complexity=0  # lightest model — saves memory
+)
 mp_drawing = mp.solutions.drawing_utils
 mp_drawing_styles = mp.solutions.drawing_styles
 
-def extract_landmarks(img):
-    img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    result = hands.process(img_rgb)
-    if result.multi_hand_landmarks:
-        lm = result.multi_hand_landmarks[0].landmark
-        coords = np.array([[l.x, l.y, l.z] for l in lm]).flatten()
-        coords -= coords[:3].mean()
-        return coords, result
-    return None, None
+@app.after_request
+def after_request(response):
+    response.headers.add('Access-Control-Allow-Origin', '*')
+    response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
+    response.headers.add('Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
+    return response
 
-def draw_landmarks(img, result):
-    for hand_landmarks in result.multi_hand_landmarks:
-        mp_drawing.draw_landmarks(
-            img, hand_landmarks,
-            mp_hands.HAND_CONNECTIONS,
-            mp_drawing_styles.get_default_hand_landmarks_style(),
-            mp_drawing_styles.get_default_hand_connections_style()
-        )
-    return img
-
-@app.route('/predict', methods=['POST'])
+@app.route('/predict', methods=['POST', 'OPTIONS'])
 def predict():
+    if request.method == 'OPTIONS':
+        return jsonify({'status': 'ok'})
     try:
-        print("Predict called!")
-        data = request.json
-        if not data or 'image' not in data:
-            print("No image in request")
-            return jsonify({'error': 'No image provided'}), 400
-
-        img_b64 = data['image']
-        print(f"Image received, length: {len(img_b64)}")
-        
+        img_b64 = request.json['image']
         img_data = base64.b64decode(img_b64)
         arr = np.frombuffer(img_data, np.uint8)
         img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-        
+
         if img is None:
-            print("Could not decode image")
             return jsonify({'error': 'Could not decode image'}), 400
 
-        print(f"Image shape: {img.shape}")
+        # Resize to reduce memory usage
+        img = cv2.resize(img, (320, 240))
+        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
-        landmarks, result = extract_landmarks(img)
+        result = hands.process(img_rgb)
 
-        if landmarks is None:
-            print("No hand detected")
+        if not result.multi_hand_landmarks:
             return jsonify({
                 'letter': 'nothing',
                 'confidence': 0,
@@ -75,13 +61,27 @@ def predict():
                 'hand_detected': False
             })
 
-        pred = model.predict(np.array([landmarks]), verbose=0)
+        # Extract landmarks
+        lm = result.multi_hand_landmarks[0].landmark
+        coords = np.array([[l.x, l.y, l.z] for l in lm]).flatten()
+        coords -= coords[:3].mean()
+
+        # Predict
+        pred = model.predict(np.array([coords]), verbose=0)
         confidence = float(np.max(pred) * 100)
         letter = LABELS[np.argmax(pred)]
-        print(f"Predicted: {letter} ({confidence:.1f}%)")
 
-        annotated = draw_landmarks(img.copy(), result)
-        _, buffer = cv2.imencode('.jpg', annotated)
+        # Draw landmarks
+        for hand_landmarks in result.multi_hand_landmarks:
+            mp_drawing.draw_landmarks(
+                img, hand_landmarks,
+                mp_hands.HAND_CONNECTIONS,
+                mp_drawing_styles.get_default_hand_landmarks_style(),
+                mp_drawing_styles.get_default_hand_connections_style()
+            )
+
+        # Encode annotated image at lower quality to save memory
+        _, buffer = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 60])
         annotated_b64 = base64.b64encode(buffer).decode('utf-8')
 
         return jsonify({
@@ -92,7 +92,7 @@ def predict():
         })
 
     except Exception as e:
-        print(f"ERROR in predict: {str(e)}")
+        print(f"ERROR: {str(e)}")
         import traceback
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
