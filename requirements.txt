@@ -1,6 +1,6 @@
 flask
 flask-cors
-tensorflow==2.18.0
+tensorflow
 mediapipe==0.10.21
 opencv-python-headless
 numpy==1.26.4
