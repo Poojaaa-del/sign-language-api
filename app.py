@@ -45,16 +45,29 @@ def draw_landmarks(img, result):
 @app.route('/predict', methods=['POST'])
 def predict():
     try:
-        # Decode image from base64
-        img_b64 = request.json['image']
+        print("Predict called!")
+        data = request.json
+        if not data or 'image' not in data:
+            print("No image in request")
+            return jsonify({'error': 'No image provided'}), 400
+
+        img_b64 = data['image']
+        print(f"Image received, length: {len(img_b64)}")
+        
         img_data = base64.b64decode(img_b64)
         arr = np.frombuffer(img_data, np.uint8)
         img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        
+        if img is None:
+            print("Could not decode image")
+            return jsonify({'error': 'Could not decode image'}), 400
 
-        # Extract landmarks
+        print(f"Image shape: {img.shape}")
+
         landmarks, result = extract_landmarks(img)
 
         if landmarks is None:
+            print("No hand detected")
             return jsonify({
                 'letter': 'nothing',
                 'confidence': 0,
@@ -62,12 +75,11 @@ def predict():
                 'hand_detected': False
             })
 
-        # Predict
         pred = model.predict(np.array([landmarks]), verbose=0)
         confidence = float(np.max(pred) * 100)
         letter = LABELS[np.argmax(pred)]
+        print(f"Predicted: {letter} ({confidence:.1f}%)")
 
-        # Draw landmarks on image
         annotated = draw_landmarks(img.copy(), result)
         _, buffer = cv2.imencode('.jpg', annotated)
         annotated_b64 = base64.b64encode(buffer).decode('utf-8')
@@ -80,6 +92,9 @@ def predict():
         })
 
     except Exception as e:
+        print(f"ERROR in predict: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
 @app.route('/health', methods=['GET'])
