@@ -7,7 +7,8 @@ import cv2
 import base64
 
 app = Flask(__name__)
-CORS(app)  # allows your website to call this API
+# CORS(app)  # allows your website to call this API
+CORS(app, origins="*", allow_headers=["Content-Type"])
 
 # Load model once at startup
 import keras
